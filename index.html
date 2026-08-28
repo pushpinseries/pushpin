@@ -340,13 +340,26 @@
   let appState = 'front';   // 'front' | 'open' | 'back'
   let current = 0;          // 0..N, number of sweeps flipped, valid when appState === 'open'
 
-  // precomputed sources for zoom lookups
-  const leftSrcs = [leftBase.querySelector('img').src].concat(
-    sweeps.map(s => s.querySelector('.face.back img').src)
-  ); // length N+1
-  const rightSrcs = sweeps.map(s => s.querySelector('.face.front img').src).concat(
-    [rightBase.querySelector('img').src]
-  ); // length N+1
+  // flat, strictly sequential list of every page's image — used only by the
+  // zoom/lightbox view so "next" there always means "the very next page",
+  // never a whole spread (2 pages) at once like the book's flip does.
+  const allSrcs = [
+    coverFront.querySelector('img').src,                 // 0: page 1 (cover)
+    leftBase.querySelector('img').src,                    // 1: page 2
+    ...sweeps.flatMap(s => [
+      s.querySelector('.face.front img').src,
+      s.querySelector('.face.back img').src
+    ]),                                                    // 2..9: pages 3-10
+    rightBase.querySelector('img').src,                   // 10: page 11
+    coverBack.querySelector('img').src                    // 11: page 12
+  ];
+  const LAST_IDX = allSrcs.length - 1;
+
+  function stageForIndex(i){
+    if(i === 0) return 0;
+    if(i === LAST_IDX) return N + 1;
+    return Math.ceil(i / 2);
+  }
 
   const dots = [];
   const totalStages = SPREADS + 1; // front + spreads + back
@@ -412,8 +425,6 @@
 
     prevBtn.disabled = (appState === 'front');
     nextBtn.disabled = (appState === 'back');
-    lightboxPrev.disabled = (appState === 'front');
-    lightboxNext.disabled = (appState === 'back');
   }
 
   function pulseTurn(el){
@@ -469,60 +480,52 @@
     if(appState === 'front'){ nextStep(); }
   });
 
-  // ---- click-to-zoom on every page, plus prev/next while zoomed ----
-  let zoomSide = 'front'; // 'front' | 'left' | 'right' | 'back'
+  // ---- click-to-zoom on every page, plus true page-by-page prev/next while zoomed ----
+  let lightboxIndex = 0;
 
-  function currentSrcFor(side){
-    if(side === 'front') return coverFront.querySelector('img').src;
-    if(side === 'back') return coverBack.querySelector('img').src;
-    if(side === 'left') return leftSrcs[current];
-    return rightSrcs[current];
+  function updateLightboxNav(){
+    lightboxPrev.disabled = (lightboxIndex === 0);
+    lightboxNext.disabled = (lightboxIndex === LAST_IDX);
   }
 
-  function openZoomSide(side){
-    zoomSide = side;
-    lightboxImg.src = currentSrcFor(side);
+  function openZoomAt(index){
+    lightboxIndex = index;
+    lightboxImg.src = allSrcs[lightboxIndex];
     lightbox.classList.add('show');
+    updateLightboxNav();
   }
 
-  coverBack.addEventListener('click', e=>{ e.stopPropagation(); openZoomSide('back'); });
-  leftBase.addEventListener('click', e=>{ e.stopPropagation(); openZoomSide('left'); });
-  rightBase.addEventListener('click', e=>{ e.stopPropagation(); openZoomSide('right'); });
-  sweeps.forEach(s=>{
-    s.querySelector('.face.front').addEventListener('click', e=>{ e.stopPropagation(); openZoomSide('right'); });
-    s.querySelector('.face.back').addEventListener('click', e=>{ e.stopPropagation(); openZoomSide('left'); });
+  coverBack.addEventListener('click', e=>{ e.stopPropagation(); openZoomAt(LAST_IDX); });
+  leftBase.addEventListener('click', e=>{ e.stopPropagation(); openZoomAt(1); });
+  rightBase.addEventListener('click', e=>{ e.stopPropagation(); openZoomAt(LAST_IDX - 1); });
+  sweeps.forEach((s,k)=>{
+    s.querySelector('.face.front').addEventListener('click', e=>{ e.stopPropagation(); openZoomAt(2 + 2*k); });
+    s.querySelector('.face.back').addEventListener('click', e=>{ e.stopPropagation(); openZoomAt(3 + 2*k); });
   });
 
-  function syncZoomSideAfterStep(){
-    if(appState === 'front'){ zoomSide = 'front'; }
-    else if(appState === 'back'){ zoomSide = 'back'; }
-    else if(zoomSide === 'front'){ zoomSide = 'left'; }
-    else if(zoomSide === 'back'){ zoomSide = 'right'; }
+  function lightboxStep(dir){
+    const next = lightboxIndex + dir;
+    if(next < 0 || next > LAST_IDX) return;
+    lightboxIndex = next;
+    lightboxImg.src = allSrcs[lightboxIndex];
+    updateLightboxNav();
   }
 
-  lightboxNext.addEventListener('click', e=>{
-    e.stopPropagation();
-    if(appState === 'back') return;
-    nextStep();
-    syncZoomSideAfterStep();
-    lightboxImg.src = currentSrcFor(zoomSide);
-  });
-  lightboxPrev.addEventListener('click', e=>{
-    e.stopPropagation();
-    if(appState === 'front') return;
-    prevStep();
-    syncZoomSideAfterStep();
-    lightboxImg.src = currentSrcFor(zoomSide);
-  });
+  lightboxNext.addEventListener('click', e=>{ e.stopPropagation(); lightboxStep(1); });
+  lightboxPrev.addEventListener('click', e=>{ e.stopPropagation(); lightboxStep(-1); });
 
-  lightboxClose.addEventListener('click', ()=> lightbox.classList.remove('show'));
-  lightbox.addEventListener('click', (e)=>{ if(e.target === lightbox) lightbox.classList.remove('show'); });
+  function closeLightbox(){
+    lightbox.classList.remove('show');
+    goToStage(stageForIndex(lightboxIndex)); // bring the book to match what was being viewed
+  }
+  lightboxClose.addEventListener('click', closeLightbox);
+  lightbox.addEventListener('click', (e)=>{ if(e.target === lightbox) closeLightbox(); });
 
   document.addEventListener('keydown', function(e){
     if(lightbox.classList.contains('show')){
-      if(e.key === 'Escape') lightbox.classList.remove('show');
-      else if(e.key === 'ArrowRight') lightboxNext.click();
-      else if(e.key === 'ArrowLeft') lightboxPrev.click();
+      if(e.key === 'Escape') closeLightbox();
+      else if(e.key === 'ArrowRight') lightboxStep(1);
+      else if(e.key === 'ArrowLeft') lightboxStep(-1);
       return;
     }
     if(e.key === 'ArrowRight') nextStep();
